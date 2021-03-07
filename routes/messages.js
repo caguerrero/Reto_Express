@@ -1,42 +1,29 @@
 var express = require("express");
 var router = express.Router();
-const fs = require("fs");
 const Joi = require("joi");
-const wslib = require("../wslib");
 const WebSocket = require("ws");
 const ws = new WebSocket("ws://localhost:3000");
-
-const getFileContent = (callback) => {
-  fs.readFile("messages.json", (err, data) => {
-    if (err) throw err;
-    callback(data.toString());
-  });
-};
+const Message = require("../models/messages");
 
 router.get("/", function (req, res, next) {
-  getFileContent((data)=>{
-    res.send(data);
-  });
+  Message.findAll().then((result) => {
+    let i = 0;
+    while (i < result.length) {
+      ws.send(parseInt(JSON.stringify(result[i].dataValues.ts)));
+      i++;
+    }
+    res.send(result);
+  })
 });
 
 router.get("/:ts", function (req, res, next) {
-  getFileContent((data) => {
-    const content = JSON.parse(data);
-    let message;
-    let i = 0;
-    while (i < content.messages.length) {
-      if (content.messages[i].ts === parseInt(req.params.ts)) {
-        message = content.messages[i];
-      }
-      i++;
-    }
-    if (message === undefined) {
+  Message.findByPk(req.params.ts).then((result) => {
+    if (result === null) {
       return res
         .status(404)
         .send(`The message with the 'ts':${req.params.ts}, was not found.`);
-    } else {
-      res.send(message);
     }
+    res.send(result);
   });
 });
 
@@ -45,45 +32,41 @@ router.post("/", function (req, res, next) {
   if (error) {
     return res.status(400).send(error.details[0].message);
   }
-  const message = {
-    message: req.body.message,
-    author: req.body.author,
-    ts: req.body.ts
-  };
-  ws.send(JSON.stringify(message));
-  res.send(message);
+  const { message, author, ts } = req.body;
+  Message.create({ message, author, ts }).then((result) => {
+    ws.send(parseInt(ts));
+    res.send(result);
+  });
 });
 
 router.put("/:ts", function (req, res, next) {
-  const message = wslib.getMessages().find((item) => item.ts === parseInt(req.params.ts));
-  if (!message)
-    return res.status(404).send(`The message with 'ts':${req.params.ts}, was not found.`);
-
   const { error } = validateMessage(req.body);
   if (error) {
     return res.status(400).send(error.details[0].message);
   }
-  message.message = req.body.message;
-  message.author = req.body.author;
-  ws.send(JSON.stringify(message));
-  res.send(message);
-}); 
 
-router.delete("/:ts", (req, res, next)=>{
-  const message = wslib.getMessages().find((item) => item.ts === parseInt(req.params.ts));
-  if (!message)
-    return res.status(404).send(`The message with 'ts':${req.params.ts}, was not found.`);
-  const index = wslib.getMessages().indexOf(message);
-  wslib.getMessages().splice(index, 1);
-  ws.send("Deleted-" + req.params.ts + "-" + index);
-  res.status(204).send();
+  Message.update(req.body, { where: { ts: req.params.ts } }).then((result) => {
+    if (result[0] === 0) {
+      return res.status(404).send(`The message with 'ts':${req.params.ts}, was not found.`);
+    }
+    ws.send(parseInt(JSON.stringify(req.body.ts)));
+    res.status(200).send("Message updated");
+  });
+});
+
+router.delete("/:ts", (req, res, next) => {
+  Message.destroy({ where: { ts: req.params.ts } }).then((result) => {
+    if (result === 0) {return res.status(404).send(`The message with 'ts':${req.params.ts}, was not found.`)};
+    ws.send(parseInt(req.params.ts));
+    res.status(204).send();
+  });
 });
 
 function validateMessage(message) {
   const schema = Joi.object({
     message: Joi.string().min(5).required(),
     author: Joi.string().required().pattern(new RegExp('[a-zA-z] [a-zA-z]')),
-    ts: Joi.required()
+    ts: Joi.number().integer().required()
   });
   return schema.validate(message);
 }
